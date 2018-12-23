@@ -1,6 +1,4 @@
 /*
- * PlaybackMessageRequest.cpp
- *
  * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
@@ -25,16 +23,16 @@ using namespace avsCommon::avs;
 using namespace avsCommon::sdkInterfaces;
 
 PlaybackMessageRequest::PlaybackMessageRequest(
-    PlaybackButton button,
+    const PlaybackCommand& command,
     const std::string& jsonContent,
     std::shared_ptr<PlaybackController> playbackController) :
         MessageRequest(jsonContent),
         m_playbackController{playbackController},
-        m_button{button} {
+        m_command(command) {
 }
 
 void PlaybackMessageRequest::sendCompleted(MessageRequestObserverInterface::Status status) {
-    m_playbackController->messageSent(m_button, status);
+    m_playbackController->messageSent(m_command, status);
 }
 
 }  // namespace playbackController

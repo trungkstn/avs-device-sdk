@@ -1,7 +1,5 @@
 /*
- * AlertScheduler.h
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -24,6 +22,8 @@
 #include <AVSCommon/AVS/FocusState.h>
 
 #include <set>
+#include <string>
+#include <list>
 
 namespace alexaClientSDK {
 namespace capabilityAgents {
@@ -65,11 +65,10 @@ public:
      *
      * @note This function must be called before other use of an object this class.
      *
-     * @param storageFilePath The file we will expect to use for our database.
      * @param observer An observer which we will notify of all alert state changes.
      * @return Whether initialization was successful.
      */
-    bool initialize(const std::string& storageFilePath, std::shared_ptr<AlertObserverInterface> observer);
+    bool initialize(std::shared_ptr<AlertObserverInterface> observer);
 
     /**
      * Schedule an alert for rendering.
@@ -96,6 +95,15 @@ public:
      * @return Whether we successfully deleted the alert.
      */
     bool deleteAlert(const std::string& alertToken);
+
+    /**
+     * Delete multiple alerts from the schedule by their tokens. All existing alerts are deleted with all-or-none rule.
+     * In case of failure no actual deletion is made. Missing alert is not treated as an error.
+     *
+     * @param tokenList List of tokens of the alerts to be deleted
+     * @return true if all alerts has been deleted, false if any of the deletion failed.
+     */
+    bool deleteAlerts(const std::list<std::string>& tokenList);
 
     /**
      * Utility function to determine if an alert is currently active.
@@ -133,13 +141,22 @@ public:
 
     /**
      * Clear all data being managed.  This includes database storage.
+     *
+     * @param reason What triggered the data to be cleared.
      */
-    void clearData();
+    void clearData(Alert::StopReason reason = Alert::StopReason::SHUTDOWN);
 
     /**
      * Handle shutdown.
      */
     void shutdown();
+
+    /**
+     * Utility method to get list of all alerts being tracked by @c AlertScheduler
+     *
+     * @return list of all alerts being tracked by @c AlertScheduler
+     */
+    std::list<std::shared_ptr<Alert>> getAllAlerts();
 
 private:
     /**
@@ -150,6 +167,16 @@ private:
      * @param reason The reason the the state changed, if applicable.
      */
     void executeOnAlertStateChange(std::string alertToken, State state, std::string reason);
+
+    /**
+     * Update an alert with the new schedule. This function cannot update an active alert (use snooze instead).
+     *
+     * @param alert The alert to be rescheduled. The alert MUST be inactive.
+     * @param newScheduledTime The new time in ISO-8601 format.
+     * @note The caller should validate the new schedule which should not be more than 30 minutes in the past.
+     * @return Whether the alert was successfully rescheduled.
+     */
+    bool updateAlert(const std::shared_ptr<Alert>& alert, const std::string& newScheduledTime);
 
     /**
      * A utility function which wraps the executor submission to notify our observer.
@@ -216,6 +243,9 @@ private:
      * @param The reason the alert is being stopped.
      */
     void deactivateActiveAlertHelperLocked(Alert::StopReason reason);
+
+    /// This is used to safely access the time utilities.
+    avsCommon::utils::timing::TimeUtils m_timeUtils;
 
     /**
      * Our observer.  Once initialized, this is only accessed within executor functions, so does not need mutex

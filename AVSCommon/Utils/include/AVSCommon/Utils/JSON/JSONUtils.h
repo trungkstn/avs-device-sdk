@@ -1,7 +1,5 @@
 /*
- * JSONUtils.h
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -14,11 +12,14 @@
  * express or implied. See the License for the specific language governing
  * permissions and limitations under the License.
  */
+
 #ifndef ALEXA_CLIENT_SDK_AVSCOMMON_UTILS_INCLUDE_AVSCOMMON_UTILS_JSON_JSONUTILS_H_
 #define ALEXA_CLIENT_SDK_AVSCOMMON_UTILS_INCLUDE_AVSCOMMON_UTILS_JSON_JSONUTILS_H_
 
-#include <rapidjson/document.h>
+#include <cstdint>
 #include <string>
+
+#include <rapidjson/document.h>
 
 #include "AVSCommon/Utils/Logger/LoggerUtils.h"
 
@@ -76,6 +77,16 @@ bool convertToValue(const rapidjson::Value& documentNode, std::string* value);
  * @return @c true If the node was successfully converted, @c false otherwise.
  */
 bool convertToValue(const rapidjson::Value& documentNode, int64_t* value);
+
+/**
+ * Converts a given rapidjson value node to a 64-bit unsigned integer. The node must
+ * be unsigned int type.
+ *
+ * @param documentNode A logical node within a parsed JSON document which rapidjson understands.
+ * @param[out] value The output parameter which will be assigned the unsigned int value.
+ * @return @c true If the node was successfully converted, @c false otherwise.
+ */
+bool convertToValue(const rapidjson::Value& documentNode, uint64_t* value);
 
 /**
  * Converts a given rapidjson value node to a bool. The node must be Bool type.

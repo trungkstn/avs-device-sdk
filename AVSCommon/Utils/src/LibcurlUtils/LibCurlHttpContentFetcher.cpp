@@ -1,7 +1,5 @@
 /*
- * LibCurlHttpContentFetcher.cpp
- *
- * Copyright 2016-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -14,9 +12,12 @@
  * express or implied. See the License for the specific language governing
  * permissions and limitations under the License.
  */
+
 #include <algorithm>
 
 #include <AVSCommon/Utils/LibcurlUtils/CurlEasyHandleWrapper.h>
+#include "AVSCommon/Utils/LibcurlUtils/CurlMultiHandleWrapper.h"
+#include <AVSCommon/Utils/LibcurlUtils/HttpResponseCodes.h>
 #include <AVSCommon/Utils/LibcurlUtils/LibCurlHttpContentFetcher.h>
 #include <AVSCommon/Utils/Memory/Memory.h>
 #include <AVSCommon/Utils/SDS/InProcessSDS.h>
@@ -34,6 +35,10 @@ static const std::string TAG("LibCurlHttpContentFetcher");
  * may also increase latency.
  */
 static const std::chrono::milliseconds TIMEOUT_FOR_BLOCKING_WRITE = std::chrono::milliseconds(100);
+/// Timeout for curl_multi_wait.
+static const auto WAIT_FOR_ACTIVITY_TIMEOUT = std::chrono::milliseconds(100);
+/// Timeout for curl connection.
+static const auto TIMEOUT_CONNECTION = std::chrono::seconds(30);
 
 /**
  * Create a LogEntry using this file's TAG and the specified event string.
@@ -71,6 +76,21 @@ size_t LibCurlHttpContentFetcher::headerCallback(char* data, size_t size, size_t
         }
         LibCurlHttpContentFetcher* thisObject = static_cast<LibCurlHttpContentFetcher*>(userData);
         thisObject->m_lastContentType = contentType;
+    } else if (line.find("content-length") == 0) {
+        // To find lines like: "Content-Length: 12345"
+        std::istringstream iss(line);
+        std::string contentTypeBeginning;
+        LibCurlHttpContentFetcher* thisObject = static_cast<LibCurlHttpContentFetcher*>(userData);
+        iss >> contentTypeBeginning >> thisObject->m_currentContentLength;
+        ACSDK_DEBUG9(LX(__func__).d("type", "content-length").d("length", thisObject->m_currentContentLength));
+    } else if (line.find("content-range") == 0) {
+        // To find lines like: "Content-Range: bytes 1000-3979/3980"
+        std::istringstream iss(line);
+        std::string contentTypeBeginning;
+        std::string contentUnit;
+        std::string range;
+        iss >> contentTypeBeginning >> contentUnit >> range;
+        ACSDK_DEBUG9(LX(__func__).d("type", "content-range").d("unit", contentUnit).d("range", range));
     }
     return size * nmemb;
 }
@@ -81,14 +101,9 @@ size_t LibCurlHttpContentFetcher::bodyCallback(char* data, size_t size, size_t n
         return 0;
     }
     LibCurlHttpContentFetcher* thisObject = static_cast<LibCurlHttpContentFetcher*>(userData);
-    if (thisObject->m_shuttingDown) {
+    if (thisObject->m_done) {
         // In order to properly quit when downloading live content, which block forever when performing a GET request
         return 0;
-    }
-    if (!thisObject->m_bodyCallbackBegan) {
-        thisObject->m_bodyCallbackBegan = true;
-        thisObject->m_statusCodePromise.set_value(thisObject->m_lastStatusCode);
-        thisObject->m_contentTypePromise.set_value(thisObject->m_lastContentType);
     }
     auto streamWriter = thisObject->m_streamWriter;
     size_t totalBytesWritten = 0;
@@ -96,7 +111,7 @@ size_t LibCurlHttpContentFetcher::bodyCallback(char* data, size_t size, size_t n
     if (streamWriter) {
         size_t targetNumBytes = size * nmemb;
 
-        while (totalBytesWritten < targetNumBytes && !thisObject->m_shuttingDown) {
+        while (totalBytesWritten < targetNumBytes && !thisObject->m_done) {
             avsCommon::avs::attachment::AttachmentWriter::WriteStatus writeStatus =
                 avsCommon::avs::attachment::AttachmentWriter::WriteStatus::OK;
 
@@ -125,6 +140,16 @@ size_t LibCurlHttpContentFetcher::bodyCallback(char* data, size_t size, size_t n
             return 0;
         }
     }
+
+    thisObject->m_totalContentReceivedLength += totalBytesWritten;
+    thisObject->m_currentContentReceivedLength += totalBytesWritten;
+
+    ACSDK_DEBUG9(LX(__func__)
+                     .d("totalContentReceived", thisObject->m_totalContentReceivedLength)
+                     .d("currentContentLength", thisObject->m_currentContentLength)
+                     .d("currentContentReceived", thisObject->m_currentContentReceivedLength)
+                     .d("remaining", thisObject->m_currentContentLength - thisObject->m_currentContentReceivedLength));
+
     return totalBytesWritten;
 }
 
@@ -134,14 +159,21 @@ size_t LibCurlHttpContentFetcher::noopCallback(char* data, size_t size, size_t n
 
 LibCurlHttpContentFetcher::LibCurlHttpContentFetcher(const std::string& url) :
         m_url{url},
-        m_bodyCallbackBegan{false},
         m_lastStatusCode{0},
-        m_shuttingDown{false} {
+        m_currentContentLength{0},
+        m_currentContentReceivedLength{0},
+        m_totalContentReceivedLength{0},
+        m_done{false},
+        m_isShutdown{false} {
     m_hasObjectBeenUsed.clear();
 }
 
-std::unique_ptr<avsCommon::utils::HTTPContent> LibCurlHttpContentFetcher::getContent(FetchOptions fetchOption) {
+std::unique_ptr<avsCommon::utils::HTTPContent> LibCurlHttpContentFetcher::getContent(
+    FetchOptions fetchOption,
+    std::shared_ptr<avsCommon::avs::attachment::AttachmentWriter> writer,
+    const std::vector<std::string>& customHeaders) {
     if (m_hasObjectBeenUsed.test_and_set()) {
+        ACSDK_ERROR(LX("getContentFailed").d("reason", "Object has already been used"));
         return nullptr;
     }
     if (!m_curlWrapper.setURL(m_url)) {
@@ -150,23 +182,50 @@ std::unique_ptr<avsCommon::utils::HTTPContent> LibCurlHttpContentFetcher::getCon
     }
     auto curlReturnValue = curl_easy_setopt(m_curlWrapper.getCurlHandle(), CURLOPT_FOLLOWLOCATION, 1L);
     if (curlReturnValue != CURLE_OK) {
-        ACSDK_ERROR(LX("getContentFailed").d("reason", "enableFollowRedirectsFailed"));
+        ACSDK_ERROR(LX("getContentFailed").d("reason", "enableFollowRedirectsFailed").d("error", curlReturnValue));
         return nullptr;
     }
     curlReturnValue = curl_easy_setopt(m_curlWrapper.getCurlHandle(), CURLOPT_AUTOREFERER, 1L);
     if (curlReturnValue != CURLE_OK) {
-        ACSDK_ERROR(LX("getContentFailed").d("reason", "enableAutoReferralSettingToRedirectsFailed"));
+        ACSDK_ERROR(LX("getContentFailed")
+                        .d("reason", "enableAutoReferralSettingToRedirectsFailed")
+                        .d("error", curlReturnValue));
         return nullptr;
     }
     // This enables the libcurl cookie engine, allowing it to send cookies
     curlReturnValue = curl_easy_setopt(m_curlWrapper.getCurlHandle(), CURLOPT_COOKIEFILE, "");
     if (curlReturnValue != CURLE_OK) {
-        ACSDK_ERROR(LX("getContentFailed").d("reason", "enableLibCurlCookieEngineFailed"));
+        ACSDK_ERROR(LX("getContentFailed").d("reason", "enableLibCurlCookieEngineFailed").d("error", curlReturnValue));
         return nullptr;
     }
+    if (!m_curlWrapper.setConnectionTimeout(TIMEOUT_CONNECTION)) {
+        ACSDK_ERROR(LX("getContentFailed").d("reason", "setConnectionTimeoutFailed"));
+        return nullptr;
+    }
+
+    curl_slist* headerList = getCustomHeaderList(customHeaders);
+    if (headerList && curl_easy_setopt(m_curlWrapper.getCurlHandle(), CURLOPT_HTTPHEADER, headerList) != CURLE_OK) {
+        ACSDK_ERROR(LX("getContentFailed").d("reason", "setCustomHeadersFailed"));
+        return nullptr;
+    }
+
+    curlReturnValue = curl_easy_setopt(
+        m_curlWrapper.getCurlHandle(),
+        CURLOPT_USERAGENT,
+        sdkInterfaces::HTTPContentFetcherInterface::getUserAgent().c_str());
+    if (curlReturnValue != CURLE_OK) {
+        ACSDK_ERROR(LX("getContentFailed").d("reason", "setUserAgentFailed").d("error", curlReturnValue));
+        return nullptr;
+    }
+
     auto httpStatusCodeFuture = m_statusCodePromise.get_future();
     auto contentTypeFuture = m_contentTypePromise.get_future();
+
     std::shared_ptr<avsCommon::avs::attachment::InProcessAttachment> stream = nullptr;
+
+    // This flag will remain false if the caller of getContent() passed in their own writer.
+    bool writerWasCreatedLocally = false;
+
     switch (fetchOption) {
         case FetchOptions::CONTENT_TYPE:
             /*
@@ -179,35 +238,85 @@ std::unique_ptr<avsCommon::utils::HTTPContent> LibCurlHttpContentFetcher::getCon
                 ACSDK_ERROR(LX("getContentFailed").d("reason", "failedToSetCurlCallback"));
                 return nullptr;
             }
-            m_thread = std::thread([this]() {
+
+            m_thread = std::thread([this, headerList]() {
+                auto curlMultiHandle = avsCommon::utils::libcurlUtils::CurlMultiHandleWrapper::create();
+                if (!curlMultiHandle) {
+                    ACSDK_ERROR(LX("getContentFailed").d("reason", "curlMultiHandleWrapperCreateFailed"));
+                    // Set the promises because of errors.
+                    m_statusCodePromise.set_value(0);
+                    m_contentTypePromise.set_value("");
+                    return;
+                }
+                curlMultiHandle->addHandle(m_curlWrapper.getCurlHandle());
+
+                int numTransfersLeft = 1;
                 long finalResponseCode = 0;
                 char* contentType = nullptr;
-                auto curlReturnValue = curl_easy_perform(m_curlWrapper.getCurlHandle());
-                if (curlReturnValue != CURLE_OK && curlReturnValue != CURLE_WRITE_ERROR) {
-                    ACSDK_ERROR(LX("curlEasyPerformFailed").d("error", curl_easy_strerror(curlReturnValue)));
+
+                while (numTransfersLeft && !m_isShutdown) {
+                    auto result = curlMultiHandle->perform(&numTransfersLeft);
+                    if (CURLM_CALL_MULTI_PERFORM == result) {
+                        continue;
+                    } else if (CURLM_OK != result) {
+                        ACSDK_ERROR(LX("getContentFailed").d("reason", "performFailed"));
+                        break;
+                    }
+
+                    auto curlReturnValue =
+                        curl_easy_getinfo(m_curlWrapper.getCurlHandle(), CURLINFO_RESPONSE_CODE, &finalResponseCode);
+                    if (curlReturnValue != CURLE_OK) {
+                        ACSDK_ERROR(LX("curlEasyGetInfoFailed").d("error", curl_easy_strerror(curlReturnValue)));
+                        break;
+                    }
+                    if (0 != finalResponseCode && (finalResponseCode < HTTPResponseCode::REDIRECTION_START_CODE ||
+                                                   finalResponseCode > HTTPResponseCode::REDIRECTION_END_CODE)) {
+                        ACSDK_DEBUG9(LX("getContent").d("responseCode", finalResponseCode).sensitive("url", m_url));
+                        curlReturnValue =
+                            curl_easy_getinfo(m_curlWrapper.getCurlHandle(), CURLINFO_CONTENT_TYPE, &contentType);
+                        if (curlReturnValue == CURLE_OK && contentType) {
+                            ACSDK_DEBUG9(LX("getContent").d("contentType", contentType).sensitive("url", m_url));
+                        } else {
+                            ACSDK_ERROR(LX("curlEasyGetInfoFailed").d("error", curl_easy_strerror(curlReturnValue)));
+                            ACSDK_ERROR(
+                                LX("getContent").d("contentType", "failedToGetContentType").sensitive("url", m_url));
+                        }
+                        break;
+                    }
+
+                    int numTransfersUpdated = 0;
+                    result = curlMultiHandle->wait(WAIT_FOR_ACTIVITY_TIMEOUT, &numTransfersUpdated);
+                    if (result != CURLM_OK) {
+                        ACSDK_ERROR(LX("getContentFailed")
+                                        .d("reason", "multiWaitFailed")
+                                        .d("error", curl_multi_strerror(result)));
+                        break;
+                    }
                 }
-                curlReturnValue =
-                    curl_easy_getinfo(m_curlWrapper.getCurlHandle(), CURLINFO_RESPONSE_CODE, &finalResponseCode);
-                if (curlReturnValue != CURLE_OK) {
-                    ACSDK_ERROR(LX("curlEasyGetInfoFailed").d("error", curl_easy_strerror(curlReturnValue)));
-                }
-                ACSDK_DEBUG9(LX("getContent").d("responseCode", finalResponseCode).sensitive("url", m_url));
                 m_statusCodePromise.set_value(finalResponseCode);
-                curlReturnValue = curl_easy_getinfo(m_curlWrapper.getCurlHandle(), CURLINFO_CONTENT_TYPE, &contentType);
-                if (curlReturnValue == CURLE_OK && contentType) {
-                    ACSDK_DEBUG9(LX("getContent").d("contentType", contentType).sensitive("url", m_url));
+                if (contentType) {
                     m_contentTypePromise.set_value(std::string(contentType));
                 } else {
-                    ACSDK_ERROR(LX("curlEasyGetInfoFailed").d("error", curl_easy_strerror(curlReturnValue)));
-                    ACSDK_ERROR(LX("getContent").d("contentType", "failedToGetContentType").sensitive("url", m_url));
                     m_contentTypePromise.set_value("");
                 }
+
+                // Free custom headers.
+                curl_slist_free_all(headerList);
+
+                // Abort any curl operation by removing the curl handle.
+                curlMultiHandle->removeHandle(m_curlWrapper.getCurlHandle());
             });
             break;
         case FetchOptions::ENTIRE_BODY:
-            // Using the url as the identifier for the attachment
-            stream = std::make_shared<avsCommon::avs::attachment::InProcessAttachment>(m_url);
-            m_streamWriter = stream->createWriter(sds::WriterPolicy::BLOCKING);
+            if (!writer) {
+                // Using the url as the identifier for the attachment
+                stream = std::make_shared<avsCommon::avs::attachment::InProcessAttachment>(m_url);
+                writer = stream->createWriter(sds::WriterPolicy::BLOCKING);
+                writerWasCreatedLocally = true;
+            }
+
+            m_streamWriter = writer;
+
             if (!m_streamWriter) {
                 ACSDK_ERROR(LX("getContentFailed").d("reason", "failedToCreateWriter"));
                 return nullptr;
@@ -220,32 +329,119 @@ std::unique_ptr<avsCommon::utils::HTTPContent> LibCurlHttpContentFetcher::getCon
                 ACSDK_ERROR(LX("getContentFailed").d("reason", "failedToSetCurlHeaderCallback"));
                 return nullptr;
             }
-            m_thread = std::thread([this]() {
-                auto curlReturnValue = curl_easy_perform(m_curlWrapper.getCurlHandle());
-                if (curlReturnValue != CURLE_OK) {
-                    ACSDK_ERROR(LX("curlEasyPerformFailed").d("error", curl_easy_strerror(curlReturnValue)));
+            m_thread = std::thread([this, writerWasCreatedLocally, headerList]() {
+                auto curlMultiHandle = avsCommon::utils::libcurlUtils::CurlMultiHandleWrapper::create();
+                if (!curlMultiHandle) {
+                    ACSDK_ERROR(LX("getContentFailed").d("reason", "curlMultiHandleWrapperCreateFailed"));
+                    // Set the promises because of errors.
+                    m_statusCodePromise.set_value(0);
+                    m_contentTypePromise.set_value("");
+                    return;
                 }
-                if (!m_bodyCallbackBegan) {
-                    m_statusCodePromise.set_value(m_lastStatusCode);
-                    m_contentTypePromise.set_value(m_lastContentType);
+                curlMultiHandle->addHandle(m_curlWrapper.getCurlHandle());
+
+                int numTransfersLeft = 1;
+                while (numTransfersLeft && !m_isShutdown) {
+                    auto result = curlMultiHandle->perform(&numTransfersLeft);
+                    if (CURLM_CALL_MULTI_PERFORM == result) {
+                        continue;
+                    } else if (CURLM_OK != result) {
+                        ACSDK_ERROR(LX("getContentFailed").d("reason", "performFailed"));
+                        break;
+                    }
+
+                    int numTransfersUpdated = 0;
+                    result = curlMultiHandle->wait(WAIT_FOR_ACTIVITY_TIMEOUT, &numTransfersUpdated);
+                    if (result != CURLM_OK) {
+                        ACSDK_ERROR(LX("getContentFailed")
+                                        .d("reason", "multiWaitFailed")
+                                        .d("error", curl_multi_strerror(result)));
+                        break;
+                    }
+
+                    auto bytesRemaining = m_currentContentLength - m_currentContentReceivedLength;
+                    if (bytesRemaining < 0) {
+                        bytesRemaining = 0;
+                    }
+
+                    // There's still byte remaining to download, let's try to get the rest of the data by using range.
+                    if (numTransfersLeft == 0 && bytesRemaining > 0) {
+                        // Remove the current curlHandle from the multiHandle first.
+                        curlMultiHandle->removeHandle(m_curlWrapper.getCurlHandle());
+
+                        // Reset the current content counters.
+                        m_currentContentLength = 0;
+                        m_currentContentReceivedLength = 0;
+
+                        // Set the range to start with total content that's been received so far to the end.
+                        std::ostringstream ss;
+                        ss << (m_totalContentReceivedLength) << "-";
+                        auto curlReturnValue =
+                            curl_easy_setopt(m_curlWrapper.getCurlHandle(), CURLOPT_RANGE, ss.str().c_str());
+                        if (curlReturnValue != CURLE_OK) {
+                            ACSDK_ERROR(
+                                LX("getContentFailed").d("reason", "setUserAgentFailed").d("error", curlReturnValue));
+                            return;
+                        }
+
+                        // Add the curlHandle back to the mutliHandle.
+                        curlMultiHandle->addHandle(m_curlWrapper.getCurlHandle());
+
+                        // Set this to 1 so that we will try to perform() again.
+                        numTransfersLeft = 1;
+
+                        ACSDK_DEBUG9(LX(__func__)
+                                         .d("bytesRemaining", bytesRemaining)
+                                         .d("totalContentReceived", m_totalContentReceivedLength)
+                                         .d("restartingWithRange", ss.str()));
+                    }
                 }
+
+                m_statusCodePromise.set_value(m_lastStatusCode);
+                m_contentTypePromise.set_value(m_lastContentType);
+
                 /*
-                 * Curl easy perform has finished and all data has been written. Closing writer so that readers know
-                 * when they have caught up and read everything.
+                 * If the writer was created locally, its job is done and can be safely closed.
                  */
-                m_streamWriter->close();
+                if (writerWasCreatedLocally) {
+                    m_streamWriter->close();
+                }
+
+                /*
+                 * Note: If the writer was not created locally, its owner must ensure that it closes when
+                 * necessary. In the case of a livestream, if the writer is not closed the
+                 * LibCurlHttpContentFetcher will continue to download data indefinitely.
+                 */
+                m_done = true;
+
+                // Free custom headers.
+                curl_slist_free_all(headerList);
+
+                // Abort any curl operation by removing the curl handle.
+                curlMultiHandle->removeHandle(m_curlWrapper.getCurlHandle());
             });
             break;
         default:
             return nullptr;
     }
     return avsCommon::utils::memory::make_unique<avsCommon::utils::HTTPContent>(
-        avsCommon::utils::HTTPContent{std::move(httpStatusCodeFuture), std::move(contentTypeFuture), stream});
+        std::move(httpStatusCodeFuture), std::move(contentTypeFuture), stream);
+}
+
+curl_slist* LibCurlHttpContentFetcher::getCustomHeaderList(std::vector<std::string> customHeaders) {
+    struct curl_slist* headers = nullptr;
+    for (const auto& header : customHeaders) {
+        ACSDK_DEBUG9(LX("getCustomHeaderList").d("header", header.c_str()));
+        headers = curl_slist_append(headers, header.c_str());
+    }
+    return headers;
 }
 
 LibCurlHttpContentFetcher::~LibCurlHttpContentFetcher() {
-    m_shuttingDown = true;
+    ACSDK_DEBUG9(LX("~LibCurlHttpContentFetcher"));
     if (m_thread.joinable()) {
+        m_done = true;
+        m_isShutdown = true;
         m_thread.join();
     }
 }

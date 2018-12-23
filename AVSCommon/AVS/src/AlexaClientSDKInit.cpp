@@ -1,6 +1,4 @@
 /*
- * AlexaClientSDKInit.cpp
- *
  * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
@@ -43,7 +41,7 @@ bool AlexaClientSDKInit::isInitialized() {
     return g_isInitialized > 0;
 }
 
-bool AlexaClientSDKInit::initialize(const std::vector<std::istream*>& jsonStreams) {
+bool AlexaClientSDKInit::initialize(const std::vector<std::shared_ptr<std::istream>>& jsonStreams) {
     if (!(curl_version_info(CURLVERSION_NOW)->features & CURL_VERSION_HTTP2)) {
         ACSDK_ERROR(LX("initializeFailed").d("reason", "curlDoesNotSupportHTTP2"));
         return false;

@@ -1,6 +1,4 @@
 /*
- * PlaybackRouter.h
- *
  * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
@@ -47,10 +45,8 @@ public:
 
     /// @name @c PlaybackRouterInterface functions.
     /// @{
-    virtual void playButtonPressed() override;
-    virtual void pauseButtonPressed() override;
-    virtual void nextButtonPressed() override;
-    virtual void previousButtonPressed() override;
+    virtual void buttonPressed(avsCommon::avs::PlaybackButton button) override;
+    virtual void togglePressed(avsCommon::avs::PlaybackToggle toggle, bool action) override;
     virtual void setHandler(std::shared_ptr<avsCommon::sdkInterfaces::PlaybackHandlerInterface> handler) override;
     virtual void switchToDefaultHandler() override;
     /// @}
@@ -60,13 +56,6 @@ private:
      * Constructor.
      */
     PlaybackRouter(std::shared_ptr<avsCommon::sdkInterfaces::PlaybackHandlerInterface> defaultHandler);
-
-    /**
-     * Handle a playback button press.
-     *
-     * @param button The button that has been pressed.
-     */
-    void buttonPressed(avsCommon::avs::PlaybackButton button);
 
     /// @name RequiresShutdown Functions
     /// @{

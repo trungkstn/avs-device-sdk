@@ -1,6 +1,4 @@
 /*
- * KittAiKeyWordDetectorTest.cpp
- *
  * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
@@ -125,7 +123,8 @@ public:
         std::shared_ptr<AudioInputStream> stream,
         std::string keyword,
         AudioInputStream::Index beginIndex,
-        AudioInputStream::Index endIndex) {
+        AudioInputStream::Index endIndex,
+        std::shared_ptr<const std::vector<char>> KWDMetadata) {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_detectionResults.push_back({endIndex, keyword});
         m_detectionOccurred.notify_one();

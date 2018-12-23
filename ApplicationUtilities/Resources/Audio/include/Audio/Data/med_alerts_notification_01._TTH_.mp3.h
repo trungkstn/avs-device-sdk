@@ -1,7 +1,5 @@
 /*
- * med_alerts_notification_01._TTH_.mp3.h
- *
- * Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -3895,7 +3893,7 @@ unsigned char med_alerts_notification_01__TTH__mp3[] = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
   0xff
 };
-unsigned int med_alerts_notification_01__TTH__mp3_len = 46249;
+constexpr unsigned int med_alerts_notification_01__TTH__mp3_len = 46249;
 // clang-format on
 
 #endif  // ALEXA_CLIENT_SDK_APPLICATIONUTILITIES_RESOURCES_AUDIO_INCLUDE_AUDIO_DATA_MED_ALERTS_NOTIFICATION_01__TTH__MP3_H_

@@ -1,6 +1,4 @@
 /*
- * DialogUXStateAggregator.cpp
- *
  * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
@@ -78,7 +76,7 @@ void DialogUXStateAggregator::onStateChanged(AudioInputProcessorObserverInterfac
                 return;
             case AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH:
                 onActivityStarted();
-                setState(DialogUXStateObserverInterface::DialogUXState::LISTENING);
+                setState(DialogUXStateObserverInterface::DialogUXState::EXPECTING);
                 return;
             case AudioInputProcessorObserverInterface::State::BUSY:
                 setState(DialogUXStateObserverInterface::DialogUXState::THINKING);
@@ -119,7 +117,8 @@ void DialogUXStateAggregator::onStateChanged(SpeechSynthesizerObserverInterface:
 
 void DialogUXStateAggregator::receive(const std::string& contextId, const std::string& message) {
     m_executor.submit([this]() {
-        if (DialogUXStateObserverInterface::DialogUXState::THINKING == m_currentState) {
+        if (DialogUXStateObserverInterface::DialogUXState::THINKING == m_currentState &&
+            SpeechSynthesizerObserverInterface::SpeechSynthesizerState::GAINING_FOCUS != m_speechSynthesizerState) {
             /*
              * Stop the long timer and start a short timer so that either the state will change (i.e. Speech begins)
              * or we automatically go to idle after the short timeout (i.e. the directive received isn't related to

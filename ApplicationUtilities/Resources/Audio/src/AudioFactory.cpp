@@ -1,6 +1,4 @@
 /*
- * AudioFactory.cpp
- *
  * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
@@ -19,6 +17,7 @@
 
 #include "Audio/AlertsAudioFactory.h"
 #include "Audio/NotificationsAudioFactory.h"
+#include "Audio/CommunicationsAudioFactory.h"
 
 namespace alexaClientSDK {
 namespace applicationUtilities {
@@ -32,6 +31,11 @@ std::shared_ptr<avsCommon::sdkInterfaces::audio::AlertsAudioFactoryInterface> Au
 std::shared_ptr<avsCommon::sdkInterfaces::audio::NotificationsAudioFactoryInterface> AudioFactory::notifications()
     const {
     return std::make_shared<NotificationsAudioFactory>();
+}
+
+std::shared_ptr<avsCommon::sdkInterfaces::audio::CommunicationsAudioFactoryInterface> AudioFactory::communications()
+    const {
+    return std::make_shared<CommunicationsAudioFactory>();
 }
 
 }  // namespace audio

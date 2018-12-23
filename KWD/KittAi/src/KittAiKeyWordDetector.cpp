@@ -1,7 +1,5 @@
 /*
- * KittAiKeyWordDetector.cpp
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -14,6 +12,7 @@
  * express or implied. See the License for the specific language governing
  * permissions and limitations under the License.
  */
+
 #include <memory>
 #include <sstream>
 
@@ -120,7 +119,8 @@ KittAiKeyWordDetector::KittAiKeyWordDetector(
     std::chrono::milliseconds msToPushPerIteration) :
         AbstractKeywordDetector(keyWordObservers, keyWordDetectorStateObservers),
         m_stream{stream},
-        m_maxSamplesPerPush{(audioFormat.sampleRateHz / HERTZ_PER_KILOHERTZ) * msToPushPerIteration.count()} {
+        m_maxSamplesPerPush{
+            static_cast<size_t>((audioFormat.sampleRateHz / HERTZ_PER_KILOHERTZ) * msToPushPerIteration.count())} {
     std::stringstream sensitivities;
     std::stringstream modelPaths;
     for (unsigned int i = 0; i < kittAiConfigurations.size(); ++i) {

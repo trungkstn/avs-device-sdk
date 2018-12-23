@@ -1,7 +1,5 @@
 /*
- * HandlerAndPolicyTest.cpp
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -61,7 +59,7 @@ class HandlerAndPolicyTest : public ::testing::Test {};
 TEST_F(HandlerAndPolicyTest, testDefaultConstructor) {
     HandlerAndPolicy handlerAndPolicy;
     ASSERT_EQ(handlerAndPolicy.handler, nullptr);
-    ASSERT_EQ(handlerAndPolicy.policy, BlockingPolicy::NONE);
+    ASSERT_FALSE(handlerAndPolicy.policy.isValid());
 }
 
 /**
@@ -69,9 +67,10 @@ TEST_F(HandlerAndPolicyTest, testDefaultConstructor) {
  */
 TEST_F(HandlerAndPolicyTest, testConstructorWithValues) {
     auto handler = std::make_shared<TestDirectiveHandler>();
-    HandlerAndPolicy handlerAndPolicy(handler, BlockingPolicy::NON_BLOCKING);
+    auto neitherNonBlockingPolicy = BlockingPolicy(BlockingPolicy::MEDIUMS_NONE, false);
+    HandlerAndPolicy handlerAndPolicy(handler, neitherNonBlockingPolicy);
     ASSERT_EQ(handlerAndPolicy.handler, handler);
-    ASSERT_EQ(handlerAndPolicy.policy, BlockingPolicy::NON_BLOCKING);
+    ASSERT_EQ(handlerAndPolicy.policy, neitherNonBlockingPolicy);
 }
 
 /**
@@ -81,9 +80,11 @@ TEST_F(HandlerAndPolicyTest, testConstructorWithValues) {
 TEST_F(HandlerAndPolicyTest, testOperatorBool) {
     auto handler = std::make_shared<TestDirectiveHandler>();
     HandlerAndPolicy defaultHandlerAndPolicy;
-    HandlerAndPolicy firstHalfEmpty(nullptr, BlockingPolicy::BLOCKING);
-    HandlerAndPolicy secondHalfEmpty(handler, BlockingPolicy::NONE);
-    HandlerAndPolicy nonEmpty(handler, BlockingPolicy::BLOCKING);
+    auto audioBlockingPolicy = BlockingPolicy(BlockingPolicy::MEDIUM_AUDIO, true);
+
+    HandlerAndPolicy firstHalfEmpty(nullptr, audioBlockingPolicy);
+    HandlerAndPolicy secondHalfEmpty(handler, BlockingPolicy());
+    HandlerAndPolicy nonEmpty(handler, audioBlockingPolicy);
     ASSERT_FALSE(defaultHandlerAndPolicy);
     ASSERT_FALSE(firstHalfEmpty);
     ASSERT_FALSE(secondHalfEmpty);
@@ -98,11 +99,12 @@ TEST_F(HandlerAndPolicyTest, testOperatorEqualandNotEqual) {
     auto handler1 = std::make_shared<TestDirectiveHandler>();
     auto handler2 = std::make_shared<TestDirectiveHandler>();
     HandlerAndPolicy defaultHandlerAndPolicy;
-    HandlerAndPolicy handlerAndPolicy1(handler1, BlockingPolicy::NON_BLOCKING);
-    HandlerAndPolicy handlerAndPolicy1Clone(handler1, BlockingPolicy::NON_BLOCKING);
-    HandlerAndPolicy handlerAndPolicy2(handler1, BlockingPolicy::BLOCKING);
-    HandlerAndPolicy handlerAndPolicy3(handler2, BlockingPolicy::NON_BLOCKING);
-    HandlerAndPolicy handlerAndPolicy4(nullptr, BlockingPolicy::NON_BLOCKING);
+    auto audioNonBlockingPolicy = BlockingPolicy(BlockingPolicy::MEDIUM_AUDIO, false);
+    HandlerAndPolicy handlerAndPolicy1(handler1, audioNonBlockingPolicy);
+    HandlerAndPolicy handlerAndPolicy1Clone(handler1, audioNonBlockingPolicy);
+    HandlerAndPolicy handlerAndPolicy2(handler1, BlockingPolicy(BlockingPolicy::MEDIUM_AUDIO, true));
+    HandlerAndPolicy handlerAndPolicy3(handler2, audioNonBlockingPolicy);
+    HandlerAndPolicy handlerAndPolicy4(nullptr, audioNonBlockingPolicy);
     ASSERT_EQ(defaultHandlerAndPolicy, defaultHandlerAndPolicy);
     ASSERT_NE(defaultHandlerAndPolicy, handlerAndPolicy1);
     ASSERT_EQ(handlerAndPolicy1, handlerAndPolicy1Clone);
